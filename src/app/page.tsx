@@ -1,15 +1,24 @@
 
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import puter from "@heyputer/puter.js";
+
 import Sidebar from "../components/Sidebar";
 import ChatMessages from "../components/ChatMessages";
 import ChatComposer from "../components/ChatComposer";
 
+type Attachment = {
+  name: string;
+  type: string;
+  size: number;
+  puterPath: string;
+};
+
 type Message = {
   role: "user" | "assistant";
   content: string;
+  attachments?: Attachment[];
 };
 
 type Chat = {
@@ -18,92 +27,72 @@ type Chat = {
   messages: Message[];
 };
 
-function Icon({
-  name,
-  size = 20,
-}: {
-  name: string;
-  size?: number;
-}) {
-  const common = {
-    width: size,
-    height: size,
-    viewBox: "0 0 24 24",
-    fill: "none",
-    stroke: "currentColor",
-    strokeWidth: 1.7,
-    strokeLinecap: "round" as const,
-    strokeLinejoin: "round" as const,
+type UndoDelete = {
+  chat: Chat;
+  index: number;
+  wasActive: boolean;
+};
+
+type StreamPart = {
+  type?: string;
+  text?: string;
+  message?: string;
+  error?: {
+    message?: string;
   };
+};
 
-  switch (name) {
-    case "plus":
-      return (
-        <svg {...common}>
-          <path d="M12 5v14M5 12h14" />
-        </svg>
-      );
+const STORAGE_KEY = "free-ai-chatbot-chats";
+const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
-    case "menu":
-      return (
-        <svg {...common}>
-          <path d="M4 6h16M4 12h16M4 18h16" />
-        </svg>
-      );
+function createId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
 
-    case "send":
-      return (
-        <svg {...common}>
-          <path d="m22 2-7 20-4-9-9-4Z" />
-          <path d="M22 2 11 13" />
-        </svg>
-      );
+function isAudioFile(file: File) {
+  return (
+    file.type.startsWith("audio/") ||
+    /\.(mp3|wav|m4a|aac|ogg|webm|flac)$/i.test(file.name)
+  );
+}
 
-    case "edit":
-      return (
-        <svg {...common}>
-          <path d="M12 20h9" />
-          <path d="m16.5 3.5 4 4L10 18l-5 1 1-5Z" />
-        </svg>
-      );
+function getFileNames(files: Attachment[]) {
+  return files.map((file) => file.name).join(", ");
+}
 
-    case "message":
-      return (
-        <svg {...common}>
-          <path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8Z" />
-        </svg>
-      );
+function safeFileName(name: string) {
+  return name
+    .normalize("NFKD")
+    .replace(/[^\w.-]+/g, "_")
+    .replace(/^_+|_+$/g, "") || "attachment";
+}
 
-    case "close":
-      return (
-        <svg {...common}>
-          <path d="m18 6-12 12M6 6l12 12" />
-        </svg>
-      );
-
-    case "bot":
-      return (
-        <svg {...common}>
-          <rect x="3" y="8" width="18" height="12" rx="3" />
-          <path d="M12 3v5M8 13h.01M16 13h.01M9 17h6" />
-        </svg>
-      );
-
-    case "copy":
-      return (
-        <svg {...common}>
-          <rect x="8" y="8" width="12" height="12" rx="2" />
-          <path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3" />
-        </svg>
-      );
-
-    default:
-      return (
-        <svg {...common}>
-          <circle cx="12" cy="12" r="9" />
-        </svg>
-      );
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    return error.message;
   }
+
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "message" in error &&
+    typeof error.message === "string"
+  ) {
+    return error.message;
+  }
+
+  return "Something went wrong. Please try again.";
+}
+
+function createAbortError() {
+  return new DOMException("Operation cancelled.", "AbortError");
+}
+
+function isAbortError(error: unknown) {
+  return (
+    error instanceof Error &&
+    error.name === "AbortError"
+  );
 }
 
 export default function Home() {
@@ -115,8 +104,13 @@ export default function Home() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const [chatsLoaded, setChatsLoaded] = useState(false);
+  const [undoDeleteItem, setUndoDeleteItem] =
+    useState<UndoDelete | null>(null);
 
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const busyRef = useRef(false);
 
   const activeChat = chats.find((chat) => chat.id === activeId);
   const messages = activeChat?.messages ?? [];
@@ -124,17 +118,13 @@ export default function Home() {
   // Load saved conversations.
   useEffect(() => {
     try {
-      const saved = localStorage.getItem("free-ai-chatbot-chats");
+      const saved = localStorage.getItem(STORAGE_KEY);
 
       if (saved) {
-        const parsed = JSON.parse(saved) as Chat[];
+        const parsed: unknown = JSON.parse(saved);
 
         if (Array.isArray(parsed)) {
-          setChats(parsed);
-
-          if (parsed.length > 0) {
-            setActiveId(parsed[0].id);
-          }
+          setChats(parsed as Chat[]);
         }
       }
     } catch (err) {
@@ -144,173 +134,651 @@ export default function Home() {
     }
   }, []);
 
-  // Save conversations after the initial load.
+  // Save conversations.
   useEffect(() => {
     if (!chatsLoaded) return;
 
     try {
-      localStorage.setItem(
-        "free-ai-chatbot-chats",
-        JSON.stringify(chats)
-      );
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(chats));
     } catch (err) {
       console.error("Could not save chats:", err);
     }
   }, [chats, chatsLoaded]);
 
-  function newChat() {
-    if (loading) return;
+  // Cleanup timers and active requests.
+  useEffect(() => {
+    return () => {
+      if (undoTimerRef.current) {
+        clearTimeout(undoTimerRef.current);
+      }
 
-    setActiveId("");
-    setInput("");
-    setError("");
-    setSidebarOpen(false);
-    textareaRef.current?.focus();
-  }
+      abortControllerRef.current?.abort();
+    };
+  }, []);
 
-  function selectChat(id: string) {
-    setActiveId(id);
-    setError("");
-    setSidebarOpen(false);
-  }
+  const updateChatMessages = useCallback(
+    (chatId: string, updater: (previous: Message[]) => Message[]) => {
+      setChats((previous) =>
+        previous.map((chat) =>
+          chat.id === chatId
+            ? { ...chat, messages: updater(chat.messages) }
+            : chat,
+        ),
+      );
+    },
+    [],
+  );
 
-  async function sendMessage(text?: string) {
-    const prompt = (text ?? input).trim();
+  const abortActiveOperation = useCallback(() => {
+    const controller = abortControllerRef.current;
 
-    if (!prompt || loading) return;
-
-    let chatId = activeId;
-    let currentMessages = messages;
-
-    if (!chatId) {
-      chatId = crypto.randomUUID();
-      currentMessages = [];
-
-      const newConversation: Chat = {
-        id: chatId,
-        title: prompt.slice(0, 40),
-        messages: [],
-      };
-
-      setChats((prev) => [newConversation, ...prev]);
-      setActiveId(chatId);
+    if (controller) {
+      controller.abort();
+      abortControllerRef.current = null;
     }
 
-    const userMessage: Message = {
-      role: "user",
-      content: prompt,
-    };
+    busyRef.current = false;
+    setLoading(false);
+  }, []);
 
-    const updatedMessages = [...currentMessages, userMessage];
+  function newChat() {
+    abortActiveOperation();
 
-    setChats((prev) =>
-      prev.map((chat) =>
-        chat.id === chatId
-          ? {
-              ...chat,
-              title:
-                chat.messages.length === 0
-                  ? prompt.slice(0, 40)
-                  : chat.title,
-              messages: updatedMessages,
-            }
-          : chat
-      )
+    setError("");
+    setInput("");
+    setActiveId("");
+    setSidebarOpen(false);
+
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+    });
+  }
+
+  function selectChat(chatId: string) {
+    abortActiveOperation();
+
+    setActiveId(chatId);
+    setError("");
+    setInput("");
+    setSidebarOpen(false);
+
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+    });
+  }
+
+  function deleteChat(chatId: string) {
+    const index = chats.findIndex((chat) => chat.id === chatId);
+
+    if (index === -1) return;
+
+    const chat = chats[index];
+    const wasActive = activeId === chatId;
+
+    if (wasActive) {
+      abortActiveOperation();
+    }
+
+    setUndoDeleteItem({ chat, index, wasActive });
+
+    if (undoTimerRef.current) {
+      clearTimeout(undoTimerRef.current);
+    }
+
+    undoTimerRef.current = setTimeout(() => {
+      setUndoDeleteItem(null);
+      undoTimerRef.current = null;
+    }, 5000);
+
+    setChats((previous) =>
+      previous.filter((item) => item.id !== chatId),
     );
 
-    setInput("");
-    setError("");
-    setLoading(true);
+    if (wasActive) {
+      setActiveId("");
+      setInput("");
+      setError("");
+    }
+  }
 
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "auto";
+  function undoDeleteChat() {
+    if (!undoDeleteItem) return;
+
+    if (undoTimerRef.current) {
+      clearTimeout(undoTimerRef.current);
+      undoTimerRef.current = null;
     }
 
-    try {
-      const history = updatedMessages.map((message) => ({
-        role: message.role,
-        content: message.content,
-      }));
+    const { chat, index, wasActive } = undoDeleteItem;
 
-      const response = await puter.ai.chat(history);
-      const content = response.message?.content;
+    setChats((previous) => {
+      if (previous.some((item) => item.id === chat.id)) {
+        return previous;
+      }
 
-      const answer =
-        typeof content === "string"
-          ? content
-          : Array.isArray(content)
-            ? content
-                .map((part) =>
-                  typeof part === "string"
-                    ? part
-                    : "text" in part
-                      ? String(part.text ?? "")
-                      : ""
-                )
-                .join("")
-            : String(content ?? "");
+      const restored = [...previous];
+      restored.splice(Math.min(index, restored.length), 0, chat);
 
-      if (!answer.trim()) {
+      return restored;
+    });
+
+    if (wasActive) {
+      setActiveId(chat.id);
+    }
+
+    setUndoDeleteItem(null);
+  }
+
+  function stopGeneration() {
+    abortActiveOperation();
+  }
+
+  /**
+   * Transcribe audio files and upload other files to Puter storage.
+   * Uses fs.write instead of fs.upload to avoid the current upload path
+   * that was producing the signedBatchWriteSupported error.
+   */
+  async function processFiles(
+    selectedFiles: File[],
+    controller: AbortController,
+  ): Promise<{
+    attachments: Attachment[];
+    transcripts: string[];
+  }> {
+    const attachments: Attachment[] = [];
+    const transcripts: string[] = [];
+
+    for (const file of selectedFiles) {
+      if (controller.signal.aborted) {
+        throw createAbortError();
+      }
+
+      if (file.size > MAX_FILE_SIZE) {
         throw new Error(
-          "AI কোনো text response দেয়নি। আবার চেষ্টা করো।"
+          `${file.name} is larger than 10 MB. Please choose a smaller file.`,
         );
       }
 
-      const assistantMessage: Message = {
-        role: "assistant",
-        content: answer,
-      };
+      if (isAudioFile(file)) {
+        const speech2txt = (puter.ai as any).speech2txt;
 
-      setChats((prev) =>
-        prev.map((chat) =>
-          chat.id === chatId
-            ? {
-                ...chat,
-                messages: [...updatedMessages, assistantMessage],
-              }
-            : chat
-        )
+        if (typeof speech2txt !== "function") {
+          throw new Error(
+            "Audio transcription is unavailable. Check your Puter.js installation.",
+          );
+        }
+
+        const result = await speech2txt(file, {
+          response_format: "text",
+        });
+
+        if (controller.signal.aborted) {
+          throw createAbortError();
+        }
+
+        const transcript =
+          typeof result === "string" ? result : result?.text;
+
+        if (
+          typeof transcript !== "string" ||
+          !transcript.trim()
+        ) {
+          throw new Error(
+            `Could not transcribe "${file.name}". Try another audio file.`,
+          );
+        }
+
+        transcripts.push(
+          `Transcription of "${file.name}":\n${transcript.trim()}`,
+        );
+
+        continue;
+      }
+
+      // Use a unique filename to prevent collisions.
+      const uniqueName = `${Date.now()}-${createId()}-${safeFileName(file.name)}`;
+      const destination = `uploads/${uniqueName}`;
+
+      // Create the uploads directory if it does not exist.
+      // Ignore the error only if the directory already exists.
+      try {
+        await (puter.fs as any).mkdir("uploads");
+      } catch (mkdirError) {
+        const message = getErrorMessage(mkdirError).toLowerCase();
+
+        const alreadyExists =
+          message.includes("already exists") ||
+          message.includes("file_exists") ||
+          message.includes("directory exists");
+
+        if (!alreadyExists) {
+          console.warn(
+            "Could not create uploads directory; trying the root directory.",
+            mkdirError,
+          );
+        }
+      }
+
+      if (controller.signal.aborted) {
+        throw createAbortError();
+      }
+
+      let savedFile: any;
+
+      try {
+        savedFile = await (puter.fs as any).write(
+          destination,
+          file,
+        );
+      } catch (writeError) {
+        // Fallback to the root directory if the uploads directory
+        // cannot be written to.
+        if (controller.signal.aborted) {
+          throw createAbortError();
+        }
+
+        const fallbackPath = `${Date.now()}-${createId()}-${safeFileName(file.name)}`;
+
+        try {
+          savedFile = await (puter.fs as any).write(
+            fallbackPath,
+            file,
+          );
+        } catch {
+          throw new Error(
+            `Could not upload "${file.name}" to Puter storage. ${getErrorMessage(writeError)}`,
+          );
+        }
+      }
+
+      if (controller.signal.aborted) {
+        throw createAbortError();
+      }
+
+      const puterPath =
+        savedFile?.path ??
+        savedFile?.file?.path;
+
+      if (
+        typeof puterPath !== "string" ||
+        !puterPath.trim()
+      ) {
+        throw new Error(
+          `Puter did not return a valid storage path for "${file.name}".`,
+        );
+      }
+
+      attachments.push({
+        name: file.name,
+        type: file.type || "application/octet-stream",
+        size: file.size,
+        puterPath,
+      });
+    }
+
+    return { attachments, transcripts };
+  }
+
+  /**
+   * Generate a streamed assistant response.
+   */
+  async function generateResponse(
+    chatId: string,
+    history: Message[],
+    controller: AbortController,
+  ) {
+    let answer = "";
+
+    updateChatMessages(chatId, (previous) => [
+      ...previous,
+      { role: "assistant", content: "" },
+    ]);
+
+    try {
+      const aiHistory = history.map((message) => {
+        if (
+          message.role !== "user" ||
+          !message.attachments?.length
+        ) {
+          return {
+            role: message.role,
+            content: message.content,
+          };
+        }
+
+        return {
+          role: "user",
+          content: [
+            ...message.attachments.map((file) => ({
+              type: "file",
+              puter_path: file.puterPath,
+            })),
+            {
+              type: "text",
+              text:
+                message.content ||
+                "Please analyze the attached file and explain its contents.",
+            },
+          ],
+        };
+      });
+
+      if (controller.signal.aborted) {
+        throw createAbortError();
+      }
+
+      const response = await (puter.ai.chat as any)(
+        aiHistory,
+        false,
+        {
+          stream: true,
+          signal: controller.signal,
+        },
       );
+
+      for await (const part of response as AsyncIterable<StreamPart>) {
+        if (controller.signal.aborted) {
+          break;
+        }
+
+        if (part?.type === "error") {
+          throw new Error(
+            part.error?.message ||
+              part.message ||
+              "An error occurred while generating the response.",
+          );
+        }
+
+        if (
+          part?.type === "text" &&
+          typeof part.text === "string"
+        ) {
+          answer += part.text;
+        } else if (
+          !part?.type &&
+          typeof part?.text === "string"
+        ) {
+          answer += part.text;
+        }
+
+        if (answer) {
+          const currentAnswer = answer;
+
+          updateChatMessages(chatId, (previous) => {
+            const updated = [...previous];
+            const last = updated[updated.length - 1];
+
+            if (last?.role === "assistant") {
+              updated[updated.length - 1] = {
+                ...last,
+                content: currentAnswer,
+              };
+            }
+
+            return updated;
+          });
+        }
+      }
     } catch (err) {
-      console.error("Puter AI error:", err);
+      if (
+        controller.signal.aborted ||
+        isAbortError(err)
+      ) {
+        return;
+      }
 
-      setError(
-        err instanceof Error
-          ? err.message
-          : "AI response পাওয়া যায়নি। আবার চেষ্টা করো।"
+      // Remove the empty assistant placeholder if the request failed.
+      updateChatMessages(chatId, (previous) =>
+        previous.filter(
+          (message, index) =>
+            !(
+              index === previous.length - 1 &&
+              message.role === "assistant" &&
+              !message.content
+            ),
+        ),
       );
+
+      throw err;
     } finally {
-      setLoading(false);
-      textareaRef.current?.focus();
+      // On cancellation, remove only an empty placeholder.
+      if (controller.signal.aborted) {
+        updateChatMessages(chatId, (previous) =>
+          previous.filter(
+            (message, index) =>
+              !(
+                index === previous.length - 1 &&
+                message.role === "assistant" &&
+                !message.content
+              ),
+          ),
+        );
+      }
     }
   }
 
-  async function copyMessage(content: string, index: number) {
+  async function sendMessage(
+    text?: string,
+    selectedFiles: File[] = [],
+  ) {
+    if (busyRef.current) return;
+
+    const typedText = (text ?? input).trim();
+
+    if (!typedText && selectedFiles.length === 0) {
+      return;
+    }
+
+    const controller = new AbortController();
+
+    abortControllerRef.current = controller;
+    busyRef.current = true;
+
+    setLoading(true);
+    setError("");
+
+    try {
+      let attachments: Attachment[] = [];
+      let transcripts: string[] = [];
+
+      if (selectedFiles.length > 0) {
+        const processed = await processFiles(
+          selectedFiles,
+          controller,
+        );
+
+        attachments = processed.attachments;
+        transcripts = processed.transcripts;
+      }
+
+      if (controller.signal.aborted) {
+        throw createAbortError();
+      }
+
+      const combinedText = [
+        typedText,
+        ...transcripts,
+        attachments.length
+          ? `Attached files: ${getFileNames(attachments)}`
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+
+      if (!combinedText && attachments.length === 0) {
+        return;
+      }
+
+      const userMessage: Message = {
+        role: "user",
+        content:
+          combinedText ||
+          "Please analyze the attached file and explain its contents.",
+        ...(attachments.length > 0 ? { attachments } : {}),
+      };
+
+      const existingChat = chats.find(
+        (chat) => chat.id === activeId,
+      );
+
+      let chatId: string;
+      let history: Message[];
+
+      if (!existingChat) {
+        chatId = createId();
+
+        const titleSource =
+          typedText ||
+          transcripts[0]?.split("\n").slice(1).join(" ") ||
+          getFileNames(attachments) ||
+          "New chat";
+
+        const newConversation: Chat = {
+          id: chatId,
+          title:
+            titleSource.length > 40
+              ? `${titleSource.slice(0, 40)}...`
+              : titleSource,
+          messages: [userMessage],
+        };
+
+        setChats((previous) => [
+          newConversation,
+          ...previous,
+        ]);
+
+        setActiveId(chatId);
+        history = [userMessage];
+      } else {
+        chatId = existingChat.id;
+        history = [...existingChat.messages, userMessage];
+
+        setChats((previous) =>
+          previous.map((chat) =>
+            chat.id === chatId
+              ? {
+                  ...chat,
+                  messages: history,
+                  title:
+                    chat.messages.length === 0
+                      ? (
+                          typedText ||
+                          getFileNames(attachments) ||
+                          "New chat"
+                        ).slice(0, 40)
+                      : chat.title,
+                }
+              : chat,
+          ),
+        );
+      }
+
+      setInput("");
+
+      if (textareaRef.current) {
+        textareaRef.current.style.height = "auto";
+      }
+
+      await generateResponse(chatId, history, controller);
+    } catch (err) {
+      if (
+        !controller.signal.aborted &&
+        !isAbortError(err)
+      ) {
+        setError(getErrorMessage(err));
+      }
+    } finally {
+      // An older operation must not reset a newer operation's state.
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+        busyRef.current = false;
+        setLoading(false);
+        textareaRef.current?.focus();
+      }
+    }
+  }
+
+  async function regenerateResponse() {
+    if (busyRef.current || !activeChat) return;
+
+    const lastUserIndex = activeChat.messages
+      .map((message) => message.role)
+      .lastIndexOf("user");
+
+    if (lastUserIndex === -1) return;
+
+    const history = activeChat.messages.slice(
+      0,
+      lastUserIndex + 1,
+    );
+
+    const controller = new AbortController();
+
+    abortControllerRef.current = controller;
+    busyRef.current = true;
+
+    setLoading(true);
+    setError("");
+
+    // Remove the old assistant response before regenerating.
+    setChats((previous) =>
+      previous.map((chat) =>
+        chat.id === activeChat.id
+          ? { ...chat, messages: history }
+          : chat,
+      ),
+    );
+
+    try {
+      await generateResponse(
+        activeChat.id,
+        history,
+        controller,
+      );
+    } catch (err) {
+      if (
+        !controller.signal.aborted &&
+        !isAbortError(err)
+      ) {
+        setError(getErrorMessage(err));
+      }
+    } finally {
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+        busyRef.current = false;
+        setLoading(false);
+      }
+    }
+  }
+
+  async function copyMessage(
+    content: string,
+    index: number,
+  ) {
     try {
       await navigator.clipboard.writeText(content);
-
       setCopiedIndex(index);
 
-      window.setTimeout(() => {
-        setCopiedIndex(null);
-      }, 1500);
-    } catch (err) {
-      console.error("Copy failed:", err);
+      setTimeout(() => {
+        setCopiedIndex((current) =>
+          current === index ? null : current,
+        );
+      }, 1800);
+    } catch {
+      setError("Could not copy this message.");
     }
+  }
+
+  function handleSuggestion(suggestion: string) {
+    setInput(suggestion);
+
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+    });
   }
 
   return (
-    <main className="flex h-dvh min-h-0 overflow-hidden bg-white text-[#0d0d0d] dark:bg-[#212121] dark:text-[#ececec]">
-      {/* Mobile sidebar overlay */}
-      {sidebarOpen && (
-        <button
-          aria-label="Close sidebar"
-          onClick={() => setSidebarOpen(false)}
-          className="fixed inset-0 z-30 bg-black/40 md:hidden"
-        />
-      )}
-
-      {/* Sidebar */}
+    <main className="flex h-dvh overflow-hidden bg-white text-gray-900 dark:bg-[#212121] dark:text-gray-100">
       <Sidebar
         chats={chats}
         activeId={activeId}
@@ -318,51 +786,99 @@ export default function Home() {
         onNewChat={newChat}
         onSelectChat={selectChat}
         onClose={() => setSidebarOpen(false)}
-        onDeleteChat={(id) => {
-          setChats((prev) =>
-            prev.filter((chat) => chat.id !== id)
+        onDeleteChat={deleteChat}
+        onRenameChat={(id, title) => {
+          setChats((previous) =>
+            previous.map((chat) =>
+              chat.id === id
+                ? { ...chat, title }
+                : chat,
+            ),
           );
-
-          if (activeId === id) {
-            setActiveId("");
-            setError("");
-          }
         }}
       />
 
-      {/* Main chat area */}
-      <section className="relative flex min-h-0 min-w-0 flex-1 flex-col">
-        {/* Header */}
-        <header className="z-10 flex h-[60px] shrink-0 items-center justify-between px-3 md:px-5">
-          <div className="flex items-center gap-2">
+      <section className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <header className="z-10 flex h-14 shrink-0 items-center justify-between border-b border-gray-200 bg-white px-3 dark:border-white/10 dark:bg-[#212121] sm:px-5">
+          <div className="flex min-w-0 items-center gap-3">
             <button
+              type="button"
               onClick={() => setSidebarOpen(true)}
-              className="rounded-lg p-2 hover:bg-black/5 dark:hover:bg-white/10 md:hidden"
-              aria-label="Open menu"
+              aria-label="Open sidebar"
+              className="rounded-lg p-2 hover:bg-gray-100 dark:hover:bg-white/10 md:hidden"
             >
-              <Icon name="menu" />
+              <svg
+                width="21"
+                height="21"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+              >
+                <path d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
             </button>
 
-            <span className="text-base font-semibold">
-              My AI
-            </span>
-
-            <span className="hidden rounded-full border border-black/10 px-2 py-1 text-[10px] text-gray-500 dark:border-white/10 sm:inline">
-              PREVIEW
-            </span>
+            <h1 className="truncate text-sm font-semibold sm:text-base">
+              {activeChat?.title || "My AI"}
+            </h1>
           </div>
 
-          <button
-            onClick={newChat}
-            title="New chat"
-            disabled={loading}
-            className="rounded-lg p-2 hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/10"
-          >
-            <Icon name="edit" size={19} />
-          </button>
+          <div className="flex shrink-0 items-center gap-1.5">
+            {loading && (
+              <button
+                type="button"
+                onClick={stopGeneration}
+                className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium hover:bg-gray-100 dark:border-white/20 dark:hover:bg-white/10 sm:text-sm"
+              >
+                Stop
+              </button>
+            )}
+
+            {!loading &&
+              messages.some(
+                (message) => message.role === "assistant",
+              ) && (
+                <button
+                  type="button"
+                  onClick={() => void regenerateResponse()}
+                  title="Regenerate response"
+                  className="rounded-lg p-2 text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/10"
+                >
+                  <svg
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                  >
+                    <path d="M20 7v5h-5M4 17v-5h5" />
+                    <path d="M5.5 9a7 7 0 0 1 11.8-2L20 12M4 12l2.7 5a7 7 0 0 0 11.8-2" />
+                  </svg>
+                </button>
+              )}
+
+            <button
+              type="button"
+              onClick={newChat}
+              title="New chat"
+              className="rounded-lg p-2 text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/10"
+            >
+              <svg
+                width="19"
+                height="19"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+              >
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+            </button>
+          </div>
         </header>
 
-        {/* Scrollable messages */}
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
           <ChatMessages
             messages={messages}
@@ -370,32 +886,55 @@ export default function Home() {
             error={error}
             copiedIndex={copiedIndex}
             onCopy={copyMessage}
-            onRetry={() => {
-              const lastUserMessage = [...messages]
-                .reverse()
-                .find((message) => message.role === "user");
-
-              if (lastUserMessage) {
-                void sendMessage(lastUserMessage.content);
-              }
-            }}
-            onSuggestion={(prompt) => {
-              void sendMessage(prompt);
-            }}
+            onRetry={() => void regenerateResponse()}
+            onSuggestion={handleSuggestion}
           />
         </div>
 
-        {/* Bottom composer */}
         <div className="z-10 shrink-0 bg-white dark:bg-[#212121]">
           <ChatComposer
             input={input}
             setInput={setInput}
             loading={loading}
             textareaRef={textareaRef}
-            onSend={() => void sendMessage()}
+            onSend={(files: File[]) => {
+              void sendMessage(undefined, files);
+            }}
           />
         </div>
       </section>
+
+      {undoDeleteItem && (
+        <div className="fixed bottom-5 left-1/2 z-50 flex -translate-x-1/2 items-center gap-4 rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm shadow-lg dark:border-white/10 dark:bg-[#303030]">
+          <span className="text-gray-800 dark:text-gray-100">
+            Chat deleted
+          </span>
+
+          <button
+            type="button"
+            onClick={undoDeleteChat}
+            className="font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400"
+          >
+            Undo
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              if (undoTimerRef.current) {
+                clearTimeout(undoTimerRef.current);
+                undoTimerRef.current = null;
+              }
+
+              setUndoDeleteItem(null);
+            }}
+            aria-label="Dismiss"
+            className="text-gray-500 hover:text-gray-800 dark:hover:text-white"
+          >
+            ✕
+          </button>
+        </div>
+      )}
     </main>
   );
 }
