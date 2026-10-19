@@ -1,4 +1,4 @@
-
+ 
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
@@ -125,6 +125,7 @@ function Icon({
       );
 
     case "document":
+    case "file":
       return (
         <svg {...common}>
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
@@ -148,12 +149,7 @@ function Icon({
       );
 
     default:
-      return (
-        <svg {...common}>
-          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-          <path d="M14 2v6h6" />
-        </svg>
-      );
+      return null;
   }
 }
 
@@ -177,6 +173,7 @@ function formatFileSize(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return "";
 
   if (bytes < 1024) return `${bytes} B`;
+
   if (bytes < 1024 * 1024) {
     return `${(bytes / 1024).toFixed(1)} KB`;
   }
@@ -189,15 +186,24 @@ function getFileCategory(file: Attachment): IconName {
   const type = file.type.toLowerCase();
   const extension = name.split(".").pop() ?? "";
 
-  if (type.startsWith("image/") || ["png", "jpg", "jpeg", "gif", "webp", "svg"].includes(extension)) {
+  if (
+    type.startsWith("image/") ||
+    ["png", "jpg", "jpeg", "gif", "webp", "svg"].includes(extension)
+  ) {
     return "image";
   }
 
-  if (type.startsWith("audio/") || ["mp3", "wav", "ogg", "m4a", "webm"].includes(extension)) {
+  if (
+    type.startsWith("audio/") ||
+    ["mp3", "wav", "ogg", "m4a", "webm"].includes(extension)
+  ) {
     return "audio";
   }
 
-  if (type.startsWith("video/") || ["mp4", "mov", "avi", "mkv"].includes(extension)) {
+  if (
+    type.startsWith("video/") ||
+    ["mp4", "mov", "avi", "mkv"].includes(extension)
+  ) {
     return "video";
   }
 
@@ -228,8 +234,6 @@ function getDisplayContent(message: ChatMessage): string {
 
   if (attachments.length === 0) return content;
 
-  // Avoid showing the attachment names twice when the parent page
-  // appends "Attached files: ..." to the message content.
   const attachmentNames = attachments.map((file) => file.name).join(", ");
   const suffix = `Attached files: ${attachmentNames}`;
 
@@ -266,6 +270,7 @@ function AttachmentList({ files }: { files: Attachment[] }) {
               <p className="max-w-[220px] truncate text-sm font-medium">
                 {file.name}
               </p>
+
               <p className="mt-0.5 text-xs opacity-60">
                 {file.size > 0 ? formatFileSize(file.size) : "Attachment"}
                 {file.type ? ` · ${file.type}` : ""}
@@ -274,6 +279,66 @@ function AttachmentList({ files }: { files: Attachment[] }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * Separate component so React Hooks are used safely.
+ * Also clears the copy feedback timer when the component unmounts.
+ */
+function CodeBlock({ children }: { children?: React.ReactNode }) {
+  const [copied, setCopied] = useState(false);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const code = getText(children).replace(/\n$/, "");
+
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
+    };
+  }, []);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+
+      setCopied(true);
+
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
+
+      timeoutRef.current = setTimeout(() => {
+        setCopied(false);
+        timeoutRef.current = null;
+      }, 1600);
+    } catch (err) {
+      console.error("Unable to copy code:", err);
+    }
+  };
+
+  return (
+    <div className="group/code my-4 min-w-0 max-w-full overflow-hidden rounded-xl border border-white/10 bg-[#111318] text-gray-100">
+      <div className="flex items-center justify-between border-b border-white/10 px-4 py-2">
+        <span className="text-xs text-gray-400">Code</span>
+
+        <button
+          type="button"
+          onClick={() => void handleCopy()}
+          className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-gray-300 transition hover:bg-white/10 hover:text-white"
+          aria-label="Copy code"
+        >
+          <Icon name={copied ? "check" : "copy"} size={14} />
+          {copied ? "Copied" : "Copy code"}
+        </button>
+      </div>
+
+      <pre className="max-w-full overflow-x-auto p-4 text-sm leading-6">
+        {children}
+      </pre>
     </div>
   );
 }
@@ -354,43 +419,7 @@ const markdownComponents: Components = {
     );
   },
 
-  pre: ({ children }) => {
-    const [copied, setCopied] = useState(false);
-
-    const code = getText(children).replace(/\n$/, "");
-
-    const handleCopy = async () => {
-      try {
-        await navigator.clipboard.writeText(code);
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 1600);
-      } catch (err) {
-        console.error("Unable to copy code:", err);
-      }
-    };
-
-    return (
-      <div className="group/code my-4 min-w-0 overflow-hidden rounded-xl border border-white/10 bg-[#111318] text-gray-100">
-        <div className="flex items-center justify-between border-b border-white/10 px-4 py-2">
-          <span className="text-xs text-gray-400">Code</span>
-
-          <button
-            type="button"
-            onClick={() => void handleCopy()}
-            className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-gray-300 transition hover:bg-white/10 hover:text-white"
-            aria-label="Copy code"
-          >
-            <Icon name={copied ? "check" : "copy"} size={14} />
-            {copied ? "Copied" : "Copy code"}
-          </button>
-        </div>
-
-        <pre className="max-w-full overflow-x-auto p-4 text-sm leading-6">
-          {children}
-        </pre>
-      </div>
-    );
-  },
+  pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
 
   table: ({ children }) => (
     <div className="my-4 max-w-full overflow-x-auto rounded-lg border border-current/15">
@@ -421,7 +450,8 @@ const suggestions = [
   {
     title: "Explain a concept",
     description: "Learn something step by step",
-    prompt: "Explain a complex concept in simple terms with practical examples.",
+    prompt:
+      "Explain a complex concept in simple terms with practical examples.",
     icon: "sparkles" as const,
   },
   {
@@ -457,15 +487,12 @@ export default function ChatMessages({
   onSuggestion,
 }: ChatMessagesProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
-  const [showScrollButton, setShowScrollButton] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({
-      behavior: loading ? "auto" : "smooth",
-      block: "end",
-    });
-  }, [messages, loading]);
+  const [showScrollButton, setShowScrollButton] = useState(false);
+
+  // Only auto-scroll when the user is already near the bottom.
+  const shouldAutoScrollRef = useRef(true);
 
   useEffect(() => {
     const container = scrollContainerRef.current;
@@ -477,17 +504,39 @@ export default function ChatMessages({
         container.scrollTop -
         container.clientHeight;
 
+      shouldAutoScrollRef.current = distanceFromBottom < 150;
       setShowScrollButton(distanceFromBottom > 250);
     };
 
     container.addEventListener("scroll", handleScroll, { passive: true });
+    handleScroll();
 
     return () => {
       container.removeEventListener("scroll", handleScroll);
     };
   }, []);
 
+  useEffect(() => {
+    if (!shouldAutoScrollRef.current) return;
+
+    bottomRef.current?.scrollIntoView({
+      behavior: loading ? "auto" : "smooth",
+      block: "end",
+    });
+  }, [messages, loading, error]);
+
   const hasConversation = messages.length > 0;
+
+  const scrollToLatest = () => {
+    shouldAutoScrollRef.current = true;
+
+    bottomRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "end",
+    });
+
+    setShowScrollButton(false);
+  };
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
@@ -525,9 +574,7 @@ export default function ChatMessages({
                   </div>
 
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm font-semibold">
-                      {suggestion.title}
-                    </p>
+                    <p className="text-sm font-semibold">{suggestion.title}</p>
                     <p className="mt-1 text-sm leading-5 text-current/55">
                       {suggestion.description}
                     </p>
@@ -589,7 +636,11 @@ export default function ChatMessages({
                               {displayContent}
                             </ReactMarkdown>
                           ) : loading && index === messages.length - 1 ? (
-                            <div className="flex items-center gap-1.5 py-2">
+                            <div
+                              className="flex items-center gap-1.5 py-2"
+                              aria-label="AI is responding"
+                              role="status"
+                            >
                               <span className="h-2 w-2 animate-bounce rounded-full bg-current/40 [animation-delay:-0.3s]" />
                               <span className="h-2 w-2 animate-bounce rounded-full bg-current/40 [animation-delay:-0.15s]" />
                               <span className="h-2 w-2 animate-bounce rounded-full bg-current/40" />
@@ -618,9 +669,10 @@ export default function ChatMessages({
                             <button
                               type="button"
                               onClick={onRetry}
+                              disabled={loading}
                               title="Regenerate response"
                               aria-label="Regenerate response"
-                              className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs text-current/50 transition hover:bg-current/[0.06] hover:text-current"
+                              className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs text-current/50 transition hover:bg-current/[0.06] hover:text-current disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               <Icon name="refresh" size={14} />
                               Retry
@@ -646,7 +698,11 @@ export default function ChatMessages({
                       <Icon name="bot" size={18} />
                     </div>
 
-                    <div className="flex items-center gap-1.5 py-3">
+                    <div
+                      className="flex items-center gap-1.5 py-3"
+                      role="status"
+                      aria-label="AI is responding"
+                    >
                       <span className="h-2 w-2 animate-bounce rounded-full bg-current/40 [animation-delay:-0.3s]" />
                       <span className="h-2 w-2 animate-bounce rounded-full bg-current/40 [animation-delay:-0.15s]" />
                       <span className="h-2 w-2 animate-bounce rounded-full bg-current/40" />
@@ -655,11 +711,15 @@ export default function ChatMessages({
                 )}
 
               {error && (
-                <div className="ml-0 flex max-w-2xl items-start gap-3 rounded-2xl border border-red-500/20 bg-red-500/[0.06] p-4 sm:ml-12">
+                <div
+                  className="ml-0 flex max-w-2xl items-start gap-3 rounded-2xl border border-red-500/20 bg-red-500/[0.06] p-4 sm:ml-12"
+                  role="alert"
+                >
                   <div className="flex-1">
                     <p className="text-sm font-semibold text-red-500">
                       Something went wrong
                     </p>
+
                     <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-current/75">
                       {error}
                     </p>
@@ -686,12 +746,7 @@ export default function ChatMessages({
       {showScrollButton && hasConversation && (
         <button
           type="button"
-          onClick={() => {
-            bottomRef.current?.scrollIntoView({
-              behavior: "smooth",
-              block: "end",
-            });
-          }}
+          onClick={scrollToLatest}
           aria-label="Scroll to latest message"
           title="Scroll to latest message"
           className="absolute bottom-4 left-1/2 z-10 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full border border-current/15 bg-white text-gray-800 shadow-lg transition hover:scale-105 dark:bg-[#252525] dark:text-white"
