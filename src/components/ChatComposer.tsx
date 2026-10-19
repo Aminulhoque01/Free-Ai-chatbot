@@ -1,8 +1,8 @@
-
+ 
 "use client";
 
-import { useRef, useState } from "react";
-import type { RefObject } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { RefObject, KeyboardEvent } from "react";
 
 type ChatComposerProps = {
   input: string;
@@ -12,11 +12,20 @@ type ChatComposerProps = {
   onSend: (files: File[]) => void;
 };
 
+const MAX_FILE_SIZE = 10 * 1024 * 1024;
+
 function SendIcon() {
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
-      strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round"
-      className="h-[18px] w-[18px]" aria-hidden="true">
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-[18px] w-[18px]"
+      aria-hidden="true"
+    >
       <path d="m22 2-7 20-4-9-9-4Z" />
       <path d="M22 2 11 13" />
     </svg>
@@ -25,9 +34,16 @@ function SendIcon() {
 
 function PaperclipIcon() {
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
-      strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round"
-      className="h-5 w-5" aria-hidden="true">
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-5 w-5"
+      aria-hidden="true"
+    >
       <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.2-9.19a4 4 0 0 1 5.65 5.66l-9.2 9.19a2 2 0 0 1-2.82-2.83l8.48-8.48" />
     </svg>
   );
@@ -35,18 +51,45 @@ function PaperclipIcon() {
 
 function MicIcon({ recording }: { recording: boolean }) {
   return recording ? (
-    <svg viewBox="0 0 24 24" fill="currentColor"
-      className="h-5 w-5" aria-hidden="true">
+    <svg
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      className="h-5 w-5"
+      aria-hidden="true"
+    >
       <rect x="6" y="6" width="12" height="12" rx="2" />
     </svg>
   ) : (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
-      strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round"
-      className="h-5 w-5" aria-hidden="true">
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-5 w-5"
+      aria-hidden="true"
+    >
       <rect x="9" y="2" width="6" height="12" rx="3" />
       <path d="M5 10a7 7 0 0 0 14 0M12 17v5m-4 0h8" />
     </svg>
   );
+}
+
+function formatDuration(seconds: number) {
+  const minutes = Math.floor(seconds / 60);
+  const remaining = seconds % 60;
+
+  return `${minutes}:${String(remaining).padStart(2, "0")}`;
+}
+
+function getAudioExtension(mimeType: string) {
+  if (mimeType.includes("mp4")) return "m4a";
+  if (mimeType.includes("ogg")) return "ogg";
+  if (mimeType.includes("mpeg")) return "mp3";
+  if (mimeType.includes("wav")) return "wav";
+
+  return "webm";
 }
 
 export default function ChatComposer({
@@ -59,11 +102,60 @@ export default function ChatComposer({
   const [files, setFiles] = useState<File[]>([]);
   const [recording, setRecording] = useState(false);
   const [error, setError] = useState("");
+  const [recordedAudio, setRecordedAudio] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState("");
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const cancelRecordingRef = useRef(false);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+
+    return () => {
+      mountedRef.current = false;
+
+      const recorder = mediaRecorderRef.current;
+
+      if (recorder && recorder.state !== "inactive") {
+        recorder.ondataavailable = null;
+        recorder.onstop = null;
+        recorder.onerror = null;
+        recorder.stop();
+      }
+
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+
+      streamRef.current = null;
+      mediaRecorderRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!recordedAudio) {
+      setPreviewUrl("");
+      return;
+    }
+
+    const url = URL.createObjectURL(recordedAudio);
+    setPreviewUrl(url);
+
+    return () => URL.revokeObjectURL(url);
+  }, [recordedAudio]);
+
+  useEffect(() => {
+    if (!recording) return;
+
+    const timer = window.setInterval(() => {
+      setRecordingSeconds((seconds) => seconds + 1);
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [recording]);
 
   function handleChange(value: string) {
     setInput(value);
@@ -72,8 +164,7 @@ export default function ChatComposer({
 
     if (textarea) {
       textarea.style.height = "auto";
-      textarea.style.height =
-        `${Math.min(textarea.scrollHeight, 180)}px`;
+      textarea.style.height = `${Math.min(textarea.scrollHeight, 180)}px`;
     }
   }
 
@@ -82,12 +173,15 @@ export default function ChatComposer({
 
     setError("");
 
-    const maxSize = 10 * 1024 * 1024;
-    const incoming = Array.from(selected);
     const valid: File[] = [];
 
-    for (const file of incoming) {
-      if (file.size > maxSize) {
+    for (const file of Array.from(selected)) {
+      if (file.size === 0) {
+        setError(`${file.name}: this file is empty.`);
+        continue;
+      }
+
+      if (file.size > MAX_FILE_SIZE) {
         setError(`${file.name}: maximum file size is 10 MB.`);
         continue;
       }
@@ -106,7 +200,9 @@ export default function ChatComposer({
             item.lastModified === file.lastModified
         );
 
-        if (!duplicate) combined.push(file);
+        if (!duplicate) {
+          combined.push(file);
+        }
       }
 
       return combined;
@@ -118,80 +214,150 @@ export default function ChatComposer({
   }
 
   function removeFile(index: number) {
-    setFiles((previous) =>
-      previous.filter((_, i) => i !== index)
-    );
+    setFiles((previous) => previous.filter((_, i) => i !== index));
   }
 
   async function startRecording() {
+    if (loading || recording) return;
+
     setError("");
+    setRecordedAudio(null);
+    setRecordingSeconds(0);
+    cancelRecordingRef.current = false;
+    chunksRef.current = [];
 
     if (
-      typeof navigator === "undefined" ||
       !navigator.mediaDevices?.getUserMedia ||
       typeof MediaRecorder === "undefined"
     ) {
-      setError("Your browser does not support audio recording.");
+      setError(
+        "Your browser does not support audio recording. Please use a supported browser."
+      );
       return;
     }
 
+    let stream: MediaStream | null = null;
+
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
       });
 
-      streamRef.current = stream;
-      chunksRef.current = [];
+      // The component may have unmounted while permission was pending.
+      if (!mountedRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
 
-      const mimeType = [
+      const supportedMimeType = [
         "audio/webm;codecs=opus",
         "audio/webm",
         "audio/mp4",
+        "audio/ogg;codecs=opus",
       ].find((type) => MediaRecorder.isTypeSupported(type));
 
-      const recorder = new MediaRecorder(
-        stream,
-        mimeType ? { mimeType } : undefined
-      );
+      const recorder = supportedMimeType
+        ? new MediaRecorder(stream, { mimeType: supportedMimeType })
+        : new MediaRecorder(stream);
 
+      streamRef.current = stream;
       mediaRecorderRef.current = recorder;
 
-      recorder.ondataavailable = (event) => {
+      recorder.ondataavailable = (event: BlobEvent) => {
         if (event.data.size > 0) {
           chunksRef.current.push(event.data);
         }
       };
 
-      recorder.onstop = () => {
-        const type = recorder.mimeType || "audio/webm";
-        const extension = type.includes("mp4") ? "m4a" : "webm";
-
-        const audioFile = new File(
-          chunksRef.current,
-          `voice-${Date.now()}.${extension}`,
-          { type }
-        );
-
-        if (audioFile.size > 0) {
-          if (audioFile.size > 10 * 1024 * 1024) {
-            setError("Voice recording exceeds the 10 MB limit.");
-          } else {
-            setFiles((previous) => [...previous, audioFile]);
-          }
+      recorder.onerror = () => {
+        if (mountedRef.current) {
+          setError("Recording failed. Please try again.");
         }
-
-        stream.getTracks().forEach((track) => track.stop());
-        streamRef.current = null;
-        mediaRecorderRef.current = null;
-        setRecording(false);
       };
 
-      recorder.start();
+      recorder.onstop = () => {
+        const actualType =
+          recorder.mimeType ||
+          chunksRef.current.find((chunk) => chunk.type)?.type ||
+          "audio/webm";
+
+        const normalizedType = actualType.split(";")[0].trim();
+        const extension = getAudioExtension(normalizedType);
+
+        const audioBlob = new Blob(chunksRef.current, {
+          type: normalizedType,
+        });
+
+        const audioFile = new File(
+          [audioBlob],
+          `voice-${Date.now()}.${extension}`,
+          {
+            type: normalizedType,
+            lastModified: Date.now(),
+          }
+        );
+
+        chunksRef.current = [];
+
+        stream?.getTracks().forEach((track) => track.stop());
+
+        if (streamRef.current === stream) {
+          streamRef.current = null;
+        }
+
+        if (mediaRecorderRef.current === recorder) {
+          mediaRecorderRef.current = null;
+        }
+
+        if (!mountedRef.current) return;
+
+        setRecording(false);
+
+        if (cancelRecordingRef.current) {
+          cancelRecordingRef.current = false;
+          return;
+        }
+
+        if (audioFile.size === 0) {
+          setError("No audio was recorded. Please try again.");
+          return;
+        }
+
+        if (audioFile.size > MAX_FILE_SIZE) {
+          setError("Voice recording exceeds the 10 MB limit.");
+          return;
+        }
+
+        setRecordedAudio(audioFile);
+      };
+
+      recorder.start(250);
       setRecording(true);
-    } catch {
-      setError(
-        "Microphone access denied. Please allow microphone permission."
-      );
+    } catch (err) {
+      stream?.getTracks().forEach((track) => track.stop());
+
+      streamRef.current = null;
+      mediaRecorderRef.current = null;
+
+      if (!mountedRef.current) return;
+
+      setRecording(false);
+
+      const errorName = err instanceof Error ? err.name : "";
+
+      if (errorName === "NotAllowedError" || errorName === "SecurityError") {
+        setError(
+          "Microphone access denied. Please allow microphone permission and try again."
+        );
+      } else if (errorName === "NotFoundError") {
+        setError("No microphone was found on your device.");
+      } else {
+        setError("Could not start recording. Please try again.");
+      }
     }
   }
 
@@ -203,24 +369,63 @@ export default function ChatComposer({
     }
   }
 
-  function handleSend() {
-    if (loading || (!input.trim() && files.length === 0)) return;
+  function cancelRecording() {
+    cancelRecordingRef.current = true;
 
-    onSend([...files]);
-    setFiles([]);
+    const recorder = mediaRecorderRef.current;
+
+    if (recorder && recorder.state !== "inactive") {
+      recorder.stop();
+    } else {
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+      mediaRecorderRef.current = null;
+      setRecording(false);
+      cancelRecordingRef.current = false;
+    }
+
+    chunksRef.current = [];
+    setRecordedAudio(null);
     setError("");
+    setRecordingSeconds(0);
+  }
 
-    const textarea = textareaRef.current;
+  function removeRecordedAudio() {
+    setRecordedAudio(null);
+    setError("");
+  }
 
-    if (textarea) {
-      textarea.style.height = "auto";
+  function handleSend() {
+    if (loading || recording) return;
+
+    const outgoingFiles = recordedAudio
+      ? [...files, recordedAudio]
+      : [...files];
+
+    if (!input.trim() && outgoingFiles.length === 0) return;
+
+    // Pass the original File objects to the parent.
+    // The parent is responsible for transcription/upload/API formatting.
+    try {
+      onSend(outgoingFiles);
+
+      setFiles([]);
+      setRecordedAudio(null);
+      setError("");
+      setRecordingSeconds(0);
+
+      const textarea = textareaRef.current;
+
+      if (textarea) {
+        textarea.style.height = "auto";
+      }
+    } catch {
+      setError("Could not send your message. Please try again.");
     }
   }
 
-  function handleKeyDown(
-    event: React.KeyboardEvent<HTMLTextAreaElement>
-  ) {
-    if (event.key === "Enter" && !event.shiftKey) {
+  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
       handleSend();
     }
@@ -230,8 +435,6 @@ export default function ChatComposer({
     <div className="shrink-0 px-3 pb-3 pt-2 sm:px-5 sm:pb-5">
       <div className="mx-auto max-w-3xl">
         <div className="rounded-[26px] border border-black/10 bg-white shadow-sm transition focus-within:border-black/20 dark:border-white/10 dark:bg-[#303030] dark:focus-within:border-white/20">
-
-          {/* Attached files */}
           {files.length > 0 && (
             <div className="flex flex-wrap gap-2 px-4 pt-4">
               {files.map((file, index) => (
@@ -261,12 +464,44 @@ export default function ChatComposer({
                     onClick={() => removeFile(index)}
                     disabled={loading || recording}
                     aria-label={`Remove ${file.name}`}
-                    className="ml-1 rounded-full px-2 py-1 text-gray-500 hover:bg-gray-200 hover:text-red-500 dark:hover:bg-white/10"
+                    className="ml-1 rounded-full px-2 py-1 text-gray-500 hover:bg-gray-200 hover:text-red-500 disabled:opacity-40 dark:hover:bg-white/10"
                   >
                     ×
                   </button>
                 </div>
               ))}
+            </div>
+          )}
+
+          {recordedAudio && previewUrl && (
+            <div className="mx-4 mt-3 rounded-2xl border border-black/10 bg-gray-50 p-3 dark:border-white/10 dark:bg-white/5">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <p className="truncate text-sm font-medium">
+                  🎙️ Voice message ready
+                </p>
+
+                <button
+                  type="button"
+                  onClick={removeRecordedAudio}
+                  disabled={loading}
+                  aria-label="Remove recorded voice"
+                  className="rounded-full px-2 py-1 text-gray-500 hover:bg-gray-200 hover:text-red-500 disabled:opacity-40 dark:hover:bg-white/10"
+                >
+                  ×
+                </button>
+              </div>
+
+              <audio
+                controls
+                preload="metadata"
+                src={previewUrl}
+                className="w-full"
+              />
+
+              <p className="mt-1 text-xs text-gray-500">
+                {recordedAudio.type || "audio"} ·{" "}
+                {(recordedAudio.size / 1024).toFixed(1)} KB
+              </p>
             </div>
           )}
 
@@ -290,7 +525,6 @@ export default function ChatComposer({
 
           <div className="flex items-center justify-between gap-2 px-3 pb-3">
             <div className="flex min-w-0 items-center gap-1">
-              {/* File upload */}
               <input
                 ref={fileInputRef}
                 type="file"
@@ -311,7 +545,6 @@ export default function ChatComposer({
                 <PaperclipIcon />
               </button>
 
-              {/* Voice recording */}
               <button
                 type="button"
                 onClick={recording ? stopRecording : startRecording}
@@ -327,11 +560,27 @@ export default function ChatComposer({
                 <MicIcon recording={recording} />
               </button>
 
-              <span className="hidden pl-1 text-[11px] text-gray-400 sm:inline">
-                {recording
-                  ? "Recording... click ■ to stop"
-                  : "Enter to send · Shift + Enter for new line"}
-              </span>
+              {recording && (
+                <>
+                  <span className="text-xs font-medium tabular-nums text-red-500">
+                    REC {formatDuration(recordingSeconds)}
+                  </span>
+
+                  <button
+                    type="button"
+                    onClick={cancelRecording}
+                    className="ml-1 rounded-full px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 hover:text-red-500 dark:hover:bg-white/10"
+                  >
+                    Cancel
+                  </button>
+                </>
+              )}
+
+              {!recording && (
+                <span className="hidden pl-1 text-[11px] text-gray-400 sm:inline">
+                  Enter to send · Shift + Enter for new line
+                </span>
+              )}
             </div>
 
             <button
@@ -340,9 +589,10 @@ export default function ChatComposer({
               disabled={
                 loading ||
                 recording ||
-                (!input.trim() && files.length === 0)
+                (!input.trim() && files.length === 0 && !recordedAudio)
               }
               aria-label="Send message"
+              title="Send message"
               className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-black text-white transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-500 dark:bg-white dark:text-black dark:hover:bg-gray-200 dark:disabled:bg-gray-600 dark:disabled:text-gray-400"
             >
               {loading ? (
@@ -361,3 +611,4 @@ export default function ChatComposer({
     </div>
   );
 }
+ 
