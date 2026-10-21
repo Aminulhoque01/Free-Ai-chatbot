@@ -15,6 +15,16 @@ const nextConfig: NextConfig = {
       },
     },
   },
+
+  async rewrites() {
+    return [
+      {
+        source: "/api/backend/:path*",
+        destination:
+          "https://ai-chatbot-backend-6bbi.vercel.app/api/:path*",
+      },
+    ];
+  },
 };
 
 export default nextConfig;
