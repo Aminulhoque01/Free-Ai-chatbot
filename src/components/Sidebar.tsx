@@ -1,7 +1,7 @@
-
+ 
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 type Message = {
   role: "user" | "assistant";
@@ -178,7 +178,6 @@ export default function Sidebar({
   onRenameChat,
   onClose,
   user,
-  onLoginClick,
   onLogout,
 }: SidebarProps) {
   const [search, setSearch] = useState("");
@@ -186,16 +185,6 @@ export default function Sidebar({
   const [editingTitle, setEditingTitle] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<Chat | null>(null);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
-
-  // Prepare the Google sign-in button whenever the logged-out
-  // account section is mounted, including after logout.
-  useEffect(() => {
-    if (user) {
-      return;
-    }
-
-    onLoginClick();
-  }, [user, onLoginClick]);
 
   const filteredChats = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -515,7 +504,8 @@ export default function Sidebar({
                 </div>
               </div>
 
-              {/* Google Identity Services renders its official button here. */}
+              {/* Google Identity Services renders its official button here.
+                  page.tsx renders it after Google has initialized. */}
               <div
                 id="google-signin-button"
                 className="flex min-h-10 w-full items-center justify-center overflow-hidden"
