@@ -508,7 +508,7 @@ export default function Sidebar({
                   page.tsx renders it after Google has initialized. */}
               <div
                 id="google-signin-button"
-                className="flex min-h-14 w-full items-center justify-center overflow-hidden rounded-xl border border-white/10 bg-black p-3 shadow-md transition-all duration-200 hover:bg-zinc-900"
+                className="flex min-h-10 p-3 w-full items-center justify-center overflow-hidden text-black rounded-md"
                 aria-label="Sign in with Google"
               />
             </div>
