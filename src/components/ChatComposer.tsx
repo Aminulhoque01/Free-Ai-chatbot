@@ -1,4 +1,3 @@
- 
 "use client";
 
 import { useEffect, useRef, useState } from "react";
@@ -112,6 +111,15 @@ export default function ChatComposer({
   const chunksRef = useRef<Blob[]>([]);
   const cancelRecordingRef = useRef(false);
   const mountedRef = useRef(true);
+  const shouldRestoreFocusRef = useRef(false);
+
+  // Keep focus on the composer after a message has finished sending.
+  useEffect(() => {
+    if (!loading && shouldRestoreFocusRef.current) {
+      shouldRestoreFocusRef.current = false;
+      textareaRef.current?.focus();
+    }
+  }, [loading, textareaRef]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -211,6 +219,9 @@ export default function ChatComposer({
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
+
+    // Return focus to the composer after choosing attachments.
+    requestAnimationFrame(() => textareaRef.current?.focus());
   }
 
   function removeFile(index: number) {
@@ -247,7 +258,6 @@ export default function ChatComposer({
         },
       });
 
-      // The component may have unmounted while permission was pending.
       if (!mountedRef.current) {
         stream.getTracks().forEach((track) => track.stop());
         return;
@@ -333,6 +343,9 @@ export default function ChatComposer({
         }
 
         setRecordedAudio(audioFile);
+
+        // Keep the composer ready for typing.
+        requestAnimationFrame(() => textareaRef.current?.focus());
       };
 
       recorder.start(250);
@@ -388,11 +401,14 @@ export default function ChatComposer({
     setRecordedAudio(null);
     setError("");
     setRecordingSeconds(0);
+
+    requestAnimationFrame(() => textareaRef.current?.focus());
   }
 
   function removeRecordedAudio() {
     setRecordedAudio(null);
     setError("");
+    requestAnimationFrame(() => textareaRef.current?.focus());
   }
 
   function handleSend() {
@@ -404,9 +420,10 @@ export default function ChatComposer({
 
     if (!input.trim() && outgoingFiles.length === 0) return;
 
-    // Pass the original File objects to the parent.
-    // The parent is responsible for transcription/upload/API formatting.
     try {
+      // Restore focus after the parent finishes the send operation.
+      shouldRestoreFocusRef.current = true;
+
       onSend(outgoingFiles);
 
       setFiles([]);
@@ -419,13 +436,26 @@ export default function ChatComposer({
       if (textarea) {
         textarea.style.height = "auto";
       }
+
+      // If the parent does not set loading, focus immediately as well.
+      requestAnimationFrame(() => {
+        if (!loading) {
+          shouldRestoreFocusRef.current = false;
+          textareaRef.current?.focus();
+        }
+      });
     } catch {
+      shouldRestoreFocusRef.current = false;
       setError("Could not send your message. Please try again.");
     }
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+    if (
+      event.key === "Enter" &&
+      !event.shiftKey &&
+      !event.nativeEvent.isComposing
+    ) {
       event.preventDefault();
       handleSend();
     }
@@ -611,4 +641,3 @@ export default function ChatComposer({
     </div>
   );
 }
- 
