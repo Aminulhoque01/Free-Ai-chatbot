@@ -126,53 +126,7 @@ type ApiChat = {
 
 
 
-declare global {
 
-  interface Window {
-
-    google?: {
-
-      accounts: {
-
-        id: {
-
-          initialize: (config: {
-
-            client_id: string;
-
-            callback: (response: GoogleCredentialResponse) => void;
-
-          }) => void;
-
-          prompt: (
-
-            callback?: (notification: {
-
-              isNotDisplayed?: () => boolean;
-
-              isSkippedMoment?: () => boolean;
-
-              isDismissedMoment?: () => boolean;
-
-              getNotDisplayedReason?: () => string;
-
-              getSkippedReason?: () => string;
-
-            }) => void
-
-          ) => void;
-
-          cancel: () => void;
-
-        };
-
-      };
-
-    };
-
-  }
-
-}
 
 
 
@@ -1826,71 +1780,39 @@ export default function Home() {
 
 
   const handleGoogleLogin = useCallback(() => {
-
     setAuthError("");
 
-
-
     if (!googleClientId) {
-
       setAuthError(
-
         "Google Client ID is missing. Check your .env.local file."
-
       );
-
       return;
-
     }
-
-
 
     if (!window.google || !googleInitializedRef.current) {
-
       setAuthError("Google Sign-In is still loading. Please try again.");
-
       return;
-
     }
-
-
 
     if (authLoading) return;
 
+    const buttonContainer = document.getElementById(
+      "google-signin-button"
+    );
 
+    if (!buttonContainer) {
+      setAuthError("Google sign-in button is not ready. Please try again.");
+      return;
+    }
 
-    window.google.accounts.id.prompt((notification) => {
-
-      if (
-
-        notification.isNotDisplayed?.() ||
-
-        notification.isSkippedMoment?.()
-
-      ) {
-
-        const reason =
-
-          notification.getNotDisplayedReason?.() ||
-
-          notification.getSkippedReason?.();
-
-
-
-        console.info("Google prompt was not displayed:", reason);
-
-
-
-        setAuthError(
-
-          "Google login popup was not displayed. Check your Google OAuth origin settings and browser popup/privacy settings, then try again."
-
-        );
-
-      }
-
+    window.google.accounts.id.renderButton(buttonContainer, {
+      type: "standard",
+      theme: "outline",
+      size: "large",
+      text: "signin_with",
+      shape: "rectangular",
+      width: 250,
     });
-
   }, [googleClientId, authLoading]);
 
 
