@@ -1,8 +1,7 @@
 
-
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type Message = {
   role: "user" | "assistant";
@@ -188,6 +187,16 @@ export default function Sidebar({
   const [deleteTarget, setDeleteTarget] = useState<Chat | null>(null);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
 
+  // Prepare the Google sign-in button whenever the logged-out
+  // account section is mounted, including after logout.
+  useEffect(() => {
+    if (user) {
+      return;
+    }
+
+    onLoginClick();
+  }, [user, onLoginClick]);
+
   const filteredChats = useMemo(() => {
     const query = search.trim().toLowerCase();
 
@@ -222,11 +231,6 @@ export default function Sidebar({
 
     onDeleteChat(deleteTarget.id);
     setDeleteTarget(null);
-  }
-
-  function handleLogin() {
-    setAccountMenuOpen(false);
-    onLoginClick();
   }
 
   function handleLogout() {
@@ -495,30 +499,29 @@ export default function Sidebar({
               )}
             </>
           ) : (
-            <button
-              type="button"
-              onClick={handleLogin}
-              className="flex w-full items-center gap-3 rounded-xl p-2 text-left transition hover:bg-black/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:hover:bg-white/5"
-            >
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-violet-500 to-blue-600 text-sm font-semibold text-white">
-                AI
+            <div className="rounded-xl p-2">
+              <div className="mb-3 flex items-center gap-3">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-violet-500 to-blue-600 text-sm font-semibold text-white">
+                  AI
+                </div>
+
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-semibold">
+                    My AI Assistant
+                  </p>
+                  <p className="mt-0.5 text-xs text-gray-500">
+                    Sign in to your account
+                  </p>
+                </div>
               </div>
 
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-semibold">
-                  My AI Assistant
-                </p>
-
-                <p className="mt-0.5 flex items-center gap-1.5 text-xs text-gray-500">
-                  <Icon name="google" size={13} />
-                  Login with Google
-                </p>
-              </div>
-
-              <span className="text-gray-400">
-                <Icon name="user" size={17} />
-              </span>
-            </button>
+              {/* Google Identity Services renders its official button here. */}
+              <div
+                id="google-signin-button"
+                className="flex min-h-10 w-full items-center justify-center overflow-hidden"
+                aria-label="Sign in with Google"
+              />
+            </div>
           )}
         </div>
       </aside>
